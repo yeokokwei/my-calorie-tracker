@@ -1,0 +1,59 @@
+name: Build Android test APK
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - source.zip
+      - .github/workflows/build.yml
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Generate Flutter Android project and integrate V3 files
+        run: |
+          set -eu
+          unzip -q source.zip -d extracted
+          flutter create --platforms=android --org com.example my_calorie_tracker
+          cp 'extracted/My Calorie Tracker V3 Source/lib/main.dart' my_calorie_tracker/lib/main.dart
+          cp 'extracted/My Calorie Tracker V3 Source/pubspec.yaml' my_calorie_tracker/pubspec.yaml
+          APP=my_calorie_tracker/android/app/src/main
+          mkdir -p "$APP/kotlin/com/example/my_calorie_tracker"
+          cp 'extracted/My Calorie Tracker V3 Source/native/android/MainActivity.kt' "$APP/kotlin/com/example/my_calorie_tracker/MainActivity.kt"
+          cp 'extracted/My Calorie Tracker V3 Source/native/android/StepTrackingService.kt' "$APP/kotlin/com/example/my_calorie_tracker/StepTrackingService.kt"
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('my_calorie_tracker/android/app/src/main/AndroidManifest.xml')
+          s=p.read_text()
+          perms='''    <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_HEALTH" />
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+              <uses-feature android:name="android.hardware.sensor.stepcounter" android:required="false" />
+          '''
+          s=s.replace('<application',perms+'<application',1)
+          s=s.replace('</application>','<service android:name=".StepTrackingService" android:exported="false" android:foregroundServiceType="health" />\n    </application>',1)
+          p.write_text(s)
+          # Add notification permission request for Android 13+, along with activity permission request.
+          k=Path('my_calorie_tracker/android/app/src/main/kotlin/com/example/my_calorie_tracker/MainActivity.kt')
+          code=k.read_text()
+          code=code.replace('"startTracking" -> {','''"startTracking" -> {
+                      if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                          ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 112)
+                      }''')
+          k.write_text(code)
+          PY
+          cd my_calorie_tracker
+          flutter pub get
+          flutter build apk --debug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: My-Calorie-Tracker-V3-Android-APK
+          path: my_calorie_tracker/build/app/outputs/flutter-apk/app-debug.apk
+          if-no-files-found: error
